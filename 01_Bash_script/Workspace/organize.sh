@@ -19,9 +19,9 @@ tests="$3"
 answers="$4"
 
 # preset variables
-c_filepath=../Match/"$targets"/C
-py_filepath=../Match/"$targets"/Python
-java_filepath=../Match/"$targets"/Java
+c_filepath="$targets"/C
+py_filepath="$targets"/Python
+java_filepath="$targets"/Java
 
 reset_variables_dirs() {
     current_working_file_og_path=""
@@ -42,29 +42,29 @@ print_usage() {
 }
 
 init_vars_dirs() {
-    rm -rf ./temp ../Match
+    rm -rf ./temp
     mkdir ./temp
-    mkdir -p ../Match/"$targets"/C ../Match/"$targets"/Java ../Match/"$targets"/Python
-    touch ../Match/"$targets"/result.csv
-    echo "student_id,type,matched,not_matched" >../Match/"$targets"/result.csv
+    mkdir -p "$targets"/C "$targets"/Java "$targets"/Python
+    touch "$targets"/result.csv
+    echo "student_id,type,matched,not_matched" >"$targets"/result.csv
 }
 
 extract_extension() {
     string="$1"
     extension=${string#*.}
-    current_working_ext=$extension
+    current_working_ext="$extension"
 
-    if [ $extension = "c" ]; then
+    if [ "$extension" = "c" ]; then
         current_type="C"
-    elif [ $extension = "py" ]; then
+    elif [ "$extension" = "py" ]; then
         current_type="Python"
-    elif [ $extension = "java" ]; then
+    elif [ "$extension" = "java" ]; then
         current_type="Java"
     fi
 }
 
 extract_code_filepath() {
-    filepath=$(find "$1" -path "*.py" -or -path "*.c" -or -path "*.java")
+    filepath=$(find "$1" -path "*.py" -or -path "*.c" -or -path "*.java" -type f)
     extract_extension "$filepath"
     current_working_file_og_path="$filepath"
 }
@@ -80,16 +80,16 @@ proecess_zipped_file() {
 mv_code_to_dir() {
     if [ "$current_working_ext" = "c" ]; then
         mkdir -p "$c_filepath"/$current_roll
-        cp "$current_working_file_og_path" "$c_filepath"/$current_roll
-        mv -n "$c_filepath"/$current_roll/*.c "$c_filepath"/$current_roll/main.c
+        cp "$current_working_file_og_path" "$c_filepath"/$current_roll/main.c
+        # mv -n "$c_filepath"/$current_roll/*.c "$c_filepath"/$current_roll/main.c
     elif [ "$current_working_ext" = "py" ]; then
         mkdir -p "$py_filepath"/$current_roll
-        cp "$current_working_file_og_path" "$py_filepath"/$current_roll
-        mv -n "$py_filepath"/$current_roll/*.py "$py_filepath"/$current_roll/main.py
+        cp "$current_working_file_og_path" "$py_filepath"/$current_roll/main.py
+        # mv -n "$py_filepath"/$current_roll/*.py "$py_filepath"/$current_roll/main.py
     elif [ "$current_working_ext" = "java" ]; then
         mkdir -p "$java_filepath"/$current_roll
-        cp "$current_working_file_og_path" "$java_filepath"/$current_roll
-        mv -n "$java_filepath"/$current_roll/*.java "$java_filepath"/$current_roll/Main.java
+        cp "$current_working_file_og_path" "$java_filepath"/$current_roll/Main.java
+        # mv -n "$java_filepath"/$current_roll/*.java "$java_filepath"/$current_roll/Main.java
     fi
 }
 
@@ -134,7 +134,7 @@ make_result() {
         fi
     done
 
-    echo "$current_roll,$current_type,$current_match,$current_mismatch" >>../Match/"$targets"/result.csv
+    echo "$current_roll,$current_type,$current_match,$current_mismatch" >>"$targets"/result.csv
 }
 
 process_submissions() {
