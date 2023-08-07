@@ -4,13 +4,11 @@
 #include <unistd.h>
 #include <random>
 #include <time.h>
+#include <chrono>
 
 #define PRINTING 0
 #define INT_PRINT 1
 #define NOT_INT_PRINT 2
-#define BINDING 3
-#define INT_BIND 4
-#define NOT_INT_BIND 5
 
 #define is_leader(i) ((i + 1) % GRP_SIZE == 0) ? true : false
 #define grp_start_for(k) ((k / GRP_SIZE)) * GRP_SIZE
@@ -26,21 +24,18 @@ int RD_WR_TIME;
 int SUB_COUNT; // shared library book
 int RDR_COUNT; // current num of reader on SUB_COUNT
 
-clock_t time_start;
+std::chrono::steady_clock::time_point time_start2;
 
 pthread_t *std_threads;
 pthread_t *staff_threads = new pthread_t[2];
 
 int *student_print_state;
-int *leader_bind_state;
 
 sem_t *student_thread_sem;
 pthread_mutex_t print_state_mutex;
-sem_t *leader_thread_sem;
-pthread_mutex_t bind_state_mutex;
 pthread_mutex_t sub_book_mutex;
 pthread_mutex_t rdr_cnt_mutex;
-// sem_t PS_sems[4];
+sem_t binding_station_sem;
 
 static std::random_device r_dev;
 static std::mt19937_64 generator(r_dev());
@@ -53,11 +48,6 @@ void do_print(int);
 void leave_PS(int);
 void inform_students(int);
 void get_PS(int);
-void arrive_BS(int, int *);
-void do_bind(int);
-void leave_BS(int, int *);
-int get_BS(int);
-void inform_leaders(int, int *);
 
 struct printing_station
 {
@@ -78,18 +68,16 @@ void init_sems()
 {
     for (int i = 0; i < NUM_STUDENTS; i++)
         sem_init(student_thread_sem + i, 0, 0);
-    for (int i = 0; i < NUM_STUDENTS / GRP_SIZE; i++)
-        sem_init(leader_thread_sem + i, 0, 0);
 
     pthread_mutex_init(&print_state_mutex, 0);
-    pthread_mutex_init(&bind_state_mutex, 0);
     pthread_mutex_init(&sub_book_mutex, 0);
     pthread_mutex_init(&rdr_cnt_mutex, 0);
+
+    sem_init(&binding_station_sem, 0, 2);
 }
 
 void *student_thread_func(void *arg)
 {
-    int bs_num_for_leader = -1;
     next_arrival_time += pd(generator);
     // next_arrival_time += 2;
     sleep(next_arrival_time);
@@ -104,10 +92,24 @@ void *student_thread_func(void *arg)
             pthread_join(std_threads[i], NULL);
         }
         std::cout << "Group " << (id + 1) / GRP_SIZE << " has finished printing at time "
-                  << (int)(clock() - time_start) / 100 << "\n";
-        arrive_BS(id, &bs_num_for_leader);
-        do_bind(id);
-        leave_BS(id, &bs_num_for_leader);
+                  << std::chrono::duration_cast<std::chrono::seconds>(
+                         std::chrono::steady_clock::now() - time_start2)
+                         .count()
+                  << "\n";
+
+        sem_wait(&binding_station_sem);
+        std::cout << "Group " << (id + 1) / GRP_SIZE << " has started binding at time "
+                  << std::chrono::duration_cast<std::chrono::seconds>(
+                         std::chrono::steady_clock::now() - time_start2)
+                         .count()
+                  << "\n";
+        sleep(BIND_TIME);
+        std::cout << "Group " << (id + 1) / GRP_SIZE << " has finished binding at time "
+                  << std::chrono::duration_cast<std::chrono::seconds>(
+                         std::chrono::steady_clock::now() - time_start2)
+                         .count()
+                  << "\n";
+        sem_post(&binding_station_sem);
     }
     return nullptr;
 }
@@ -122,13 +124,12 @@ int main()
     std::cin >> NUM_STUDENTS >> GRP_SIZE >> PRINT_TIME >> BIND_TIME >> RD_WR_TIME;
 
     std_threads = new pthread_t[NUM_STUDENTS];
-    leader_bind_state = new int[NUM_STUDENTS / GRP_SIZE];
     student_print_state = new int[NUM_STUDENTS];
     student_thread_sem = new sem_t[NUM_STUDENTS];
-    leader_thread_sem = new sem_t[NUM_STUDENTS / GRP_SIZE];
 
     init_sems();
-    time_start = clock();
+
+    time_start2 = std::chrono::steady_clock::now();
 
     for (int i = 0; i < NUM_STUDENTS; i++)
     {
@@ -147,7 +148,10 @@ void arrive_PS(int i)
 {
     pthread_mutex_lock(&print_state_mutex);
     std::cout << "Student " << i + 1 << " has arrived in the print station at time "
-              << (int)(clock() - time_start) / 100 << "\n";
+              << std::chrono::duration_cast<std::chrono::seconds>(
+                     std::chrono::steady_clock::now() - time_start2)
+                     .count()
+              << "\n";
 
     student_print_state[i] = INT_PRINT;
     get_PS(i);
@@ -164,8 +168,10 @@ void leave_PS(int i)
 {
     pthread_mutex_lock(&print_state_mutex);
     std::cout << "Student " << i + 1 << " has finished printing at time "
-              << (int)(clock() - time_start) / 100 << "\n";
-
+              << std::chrono::duration_cast<std::chrono::seconds>(
+                     std::chrono::steady_clock::now() - time_start2)
+                     .count()
+              << "\n";
     student_print_state[i] = NOT_INT_PRINT;
     pthread_mutex_unlock(&print_state_mutex);
     inform_students(i);
@@ -192,55 +198,5 @@ void inform_students(int self)
     for (int i = self % 4; i < NUM_STUDENTS; i += GRP_SIZE)
     {
         get_PS(i);
-    }
-}
-
-void arrive_BS(int id, int *bs_num)
-{
-    pthread_mutex_lock(&bind_state_mutex);
-    std::cout << "Group " << (id + 1) / GRP_SIZE << " has started binding at time "
-              << (int)(clock() - time_start) / 100 << "\n";
-    leader_bind_state[id / GRP_SIZE] = INT_BIND;
-    *bs_num = get_BS(id);
-    pthread_mutex_unlock(&bind_state_mutex);
-    sem_wait(&leader_thread_sem[id / GRP_SIZE]);
-}
-
-void do_bind(int id) { sleep(BIND_TIME); }
-void leave_BS(int id, int *bs_num)
-{
-    pthread_mutex_lock(&bind_state_mutex);
-    std::cout << "Group " << (id + 1) / GRP_SIZE << " finished binding at time "
-              << (int)(clock() - time_start) / 100 << "\n";
-    leader_bind_state[id / GRP_SIZE] = NOT_INT_BIND;
-    pthread_mutex_unlock(&bind_state_mutex);
-    inform_leaders(id, bs_num);
-}
-int get_BS(int id)
-{
-    int bs_num = -1;
-    if (leader_bind_state[id / GRP_SIZE] == INT_BIND && (BS[0].empty || BS[1].empty))
-    {
-        leader_bind_state[id / GRP_SIZE] = BINDING;
-        if (BS[0].empty)
-        {
-            BS[0].empty = false;
-            bs_num = 0;
-        }
-        else if (BS[1].empty)
-        {
-            BS[1].empty = false;
-            bs_num = 1;
-        }
-        sem_post(&leader_thread_sem[id / GRP_SIZE]);
-    }
-    return bs_num;
-}
-void inform_leaders(int id, int *bs_num)
-{
-    BS[*bs_num].empty = true;
-    for (int i = GRP_SIZE - 1; i < NUM_STUDENTS; i += GRP_SIZE)
-    {
-        get_BS(i);
     }
 }
