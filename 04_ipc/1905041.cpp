@@ -11,7 +11,7 @@
 #define NOT_INT_PRINT 2
 
 #define is_leader(i) ((i + 1) % GRP_SIZE == 0) ? true : false
-#define grp_start_for(k) ((k / GRP_SIZE)) * GRP_SIZE
+#define grp_start_for(k) (k / GRP_SIZE) * GRP_SIZE
 #define grp_end_for(k) grp_start_for(k) + GRP_SIZE - 1
 
 int CURR_TIME;
@@ -21,8 +21,8 @@ int PRINT_TIME;
 int BIND_TIME;
 int RD_WR_TIME;
 
-int SUB_COUNT; // shared library book
-int RDR_COUNT; // current num of reader on SUB_COUNT
+int ENTRY_BOOK; // shared library book
+int RDR_COUNT;  // current num of reader on ENTRY_BOOK
 
 std::chrono::steady_clock::time_point time_start2;
 
@@ -35,19 +35,15 @@ sem_t *student_thread_sem;
 pthread_mutex_t print_state_mutex;
 pthread_mutex_t sub_book_mutex;
 pthread_mutex_t rdr_cnt_mutex;
+pthread_mutex_t output_stream_mutex;
 sem_t binding_station_sem;
 
 static std::random_device r_dev;
 static std::mt19937_64 generator(r_dev());
 std::poisson_distribution<int> pd(3);
 
-int next_arrival_time;
-
-void arrive_PS(int);
-void do_print(int);
-void leave_PS(int);
-void inform_students(int);
-void get_PS(int);
+long long int next_arrival_time;
+long long int staff_arrival_time;
 
 struct printing_station
 {
@@ -55,14 +51,16 @@ struct printing_station
     printing_station() { empty = true; }
 };
 
-struct binding_station
-{
-    bool empty;
-    binding_station() { empty = true; }
-};
-
 struct printing_station PS[4];
-struct binding_station BS[2];
+
+void arrive_PS(int);
+void do_print(int);
+void leave_PS(int);
+void inform_students(int);
+void get_PS(int);
+void do_bind(int);
+void reader_entry(int);
+void writer_entry(int);
 
 void init_sems()
 {
@@ -72,6 +70,7 @@ void init_sems()
     pthread_mutex_init(&print_state_mutex, 0);
     pthread_mutex_init(&sub_book_mutex, 0);
     pthread_mutex_init(&rdr_cnt_mutex, 0);
+    pthread_mutex_init(&output_stream_mutex, 0);
 
     sem_init(&binding_station_sem, 0, 2);
 }
@@ -91,31 +90,31 @@ void *student_thread_func(void *arg)
         {
             pthread_join(std_threads[i], NULL);
         }
+
+        pthread_mutex_lock(&output_stream_mutex);
         std::cout << "Group " << (id + 1) / GRP_SIZE << " has finished printing at time "
                   << std::chrono::duration_cast<std::chrono::seconds>(
                          std::chrono::steady_clock::now() - time_start2)
                          .count()
                   << "\n";
+        pthread_mutex_unlock(&output_stream_mutex);
 
-        sem_wait(&binding_station_sem);
-        std::cout << "Group " << (id + 1) / GRP_SIZE << " has started binding at time "
-                  << std::chrono::duration_cast<std::chrono::seconds>(
-                         std::chrono::steady_clock::now() - time_start2)
-                         .count()
-                  << "\n";
-        sleep(BIND_TIME);
-        std::cout << "Group " << (id + 1) / GRP_SIZE << " has finished binding at time "
-                  << std::chrono::duration_cast<std::chrono::seconds>(
-                         std::chrono::steady_clock::now() - time_start2)
-                         .count()
-                  << "\n";
-        sem_post(&binding_station_sem);
+        do_bind(id);
+        writer_entry(id);
     }
     return nullptr;
 }
 
 void *staff_thread_func(void *arg)
 {
+    int id = (int)arg;
+    int turn = GRP_SIZE;
+    while (turn--)
+    {
+        sleep(staff_arrival_time);
+        staff_arrival_time += pd(generator);
+        reader_entry(id);
+    }
     return nullptr;
 }
 
@@ -140,6 +139,15 @@ int main()
             return 1;
         }
     }
+    for (int i = 0; i < 2; i++)
+    {
+        int res = pthread_create(&staff_threads[i], NULL, staff_thread_func, (void *)i);
+        if (res)
+        {
+            std::cout << "ERROR: return code from pthread_create is " << res << "\n";
+            return 1;
+        }
+    }
     pthread_exit(NULL);
     return 0;
 }
@@ -147,11 +155,14 @@ int main()
 void arrive_PS(int i)
 {
     pthread_mutex_lock(&print_state_mutex);
+
+    pthread_mutex_lock(&output_stream_mutex);
     std::cout << "Student " << i + 1 << " has arrived in the print station at time "
               << std::chrono::duration_cast<std::chrono::seconds>(
                      std::chrono::steady_clock::now() - time_start2)
                      .count()
               << "\n";
+    pthread_mutex_unlock(&output_stream_mutex);
 
     student_print_state[i] = INT_PRINT;
     get_PS(i);
@@ -167,11 +178,15 @@ void do_print(int i)
 void leave_PS(int i)
 {
     pthread_mutex_lock(&print_state_mutex);
+
+    pthread_mutex_lock(&output_stream_mutex);
     std::cout << "Student " << i + 1 << " has finished printing at time "
               << std::chrono::duration_cast<std::chrono::seconds>(
                      std::chrono::steady_clock::now() - time_start2)
                      .count()
               << "\n";
+    pthread_mutex_unlock(&output_stream_mutex);
+
     student_print_state[i] = NOT_INT_PRINT;
     pthread_mutex_unlock(&print_state_mutex);
     inform_students(i);
@@ -189,7 +204,7 @@ void get_PS(int i)
 void inform_students(int self)
 {
     PS[self % 4].empty = true;
-
+    pthread_mutex_lock(&print_state_mutex);
     for (int i = grp_start_for(self); i <= grp_end_for(self); i++)
     {
         get_PS(i);
@@ -199,4 +214,76 @@ void inform_students(int self)
     {
         get_PS(i);
     }
+    pthread_mutex_unlock(&print_state_mutex);
+}
+
+void do_bind(int id)
+{
+    sem_wait(&binding_station_sem);
+
+    pthread_mutex_lock(&output_stream_mutex);
+    std::cout << "Group " << (id + 1) / GRP_SIZE << " has started binding at time "
+              << std::chrono::duration_cast<std::chrono::seconds>(
+                     std::chrono::steady_clock::now() - time_start2)
+                     .count()
+              << "\n";
+    pthread_mutex_unlock(&output_stream_mutex);
+
+    sleep(BIND_TIME);
+
+    pthread_mutex_lock(&output_stream_mutex);
+    std::cout << "Group " << (id + 1) / GRP_SIZE << " has finished binding at time "
+              << std::chrono::duration_cast<std::chrono::seconds>(
+                     std::chrono::steady_clock::now() - time_start2)
+                     .count()
+              << "\n";
+    pthread_mutex_unlock(&output_stream_mutex);
+
+    sem_post(&binding_station_sem);
+}
+
+void reader_entry(int id)
+{
+    pthread_mutex_lock(&rdr_cnt_mutex);
+    RDR_COUNT += 1;
+    if (RDR_COUNT == 1)
+    {
+        pthread_mutex_lock(&sub_book_mutex);
+    }
+    pthread_mutex_unlock(&rdr_cnt_mutex);
+
+    pthread_mutex_lock(&output_stream_mutex);
+    std::cout << "Staff " << (id + 1) << " has started reading the entry book at time "
+              << std::chrono::duration_cast<std::chrono::seconds>(
+                     std::chrono::steady_clock::now() - time_start2)
+                     .count()
+              << ". No. of submission " << ENTRY_BOOK << "\n";
+    pthread_mutex_unlock(&output_stream_mutex);
+
+    sleep(RD_WR_TIME);
+
+    pthread_mutex_lock(&rdr_cnt_mutex);
+    RDR_COUNT -= 1;
+    if (RDR_COUNT == 0)
+    {
+        pthread_mutex_unlock(&sub_book_mutex);
+    }
+    pthread_mutex_unlock(&rdr_cnt_mutex);
+}
+
+void writer_entry(int id)
+{
+    pthread_mutex_lock(&sub_book_mutex);
+    ENTRY_BOOK += 1;
+
+    pthread_mutex_lock(&output_stream_mutex);
+    std::cout << "Group " << (id + 1) / GRP_SIZE << " has submitted the report at time "
+              << std::chrono::duration_cast<std::chrono::seconds>(
+                     std::chrono::steady_clock::now() - time_start2)
+                     .count()
+              << "\n";
+    pthread_mutex_unlock(&output_stream_mutex);
+
+    sleep(RD_WR_TIME);
+    pthread_mutex_unlock(&sub_book_mutex);
 }
