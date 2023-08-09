@@ -38,12 +38,13 @@ pthread_t *staff_threads = new pthread_t[NUM_STAFF]; // threads for staffs
 
 int *student_print_state; // dynamic array for student state w.r.t. printing station
 
-sem_t *student_thread_sem;           // dynamic array for semaphore on student thread
-pthread_mutex_t print_state_mutex;   // mutex to lock the print_state array
-pthread_mutex_t entry_book_mutex;    // mutex to lock the entry book variable
-pthread_mutex_t rdr_cnt_mutex;       // mutex to lock the RDR_COUNT variable
-pthread_mutex_t output_stream_mutex; // mutex to lock cout
-sem_t binding_station_sem;           // semaphore on binding station
+sem_t *student_thread_sem;                      // dynamic array for semaphore on student thread
+pthread_mutex_t print_state_mutex;              // mutex to lock the print_state array
+pthread_mutex_t entry_book_mutex;               // mutex to lock the entry book variable
+pthread_mutex_t rdr_cnt_mutex;                  // mutex to lock the RDR_COUNT variable
+pthread_mutex_t output_stream_mutex;            // mutex to lock cout
+pthread_mutex_t printing_stations_lock[NUM_PS]; // mutex to lock the stations
+sem_t binding_station_sem;                      // semaphore on binding station
 
 unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
 std::default_random_engine generator2(seed); // random generator for student
@@ -104,6 +105,8 @@ void init_sems()
     pthread_mutex_init(&entry_book_mutex, 0);
     pthread_mutex_init(&rdr_cnt_mutex, 0);
     pthread_mutex_init(&output_stream_mutex, 0);
+    for (int i = 0; i < NUM_PS; i++)
+        pthread_mutex_init(&printing_stations_lock[i], 0);
 
     sem_init(&binding_station_sem, 0, NUM_BS);
 }
@@ -113,7 +116,7 @@ void init_sems()
 /// @return nullptr
 void *student_thread_func(void *arg)
 {
-    next_arrival_time += pd(generator2); // add random delay for arrival
+    next_arrival_time = pd(generator2); // add random delay for arrival
 
     sleep(next_arrival_time);
 
@@ -214,6 +217,7 @@ int main()
 
 void arrive_PS(int i)
 {
+    // locking so get_ps() can access and modify(if possible) the print_state array
     pthread_mutex_lock(&print_state_mutex);
 
     pthread_mutex_lock(&output_stream_mutex);
@@ -277,7 +281,10 @@ void get_PS(int i)
     // station is empty, changing the states and upping the students thread_sem
     if (student_print_state[i] == INTERESTED_PRINT && printing_station_empty[i % NUM_PS])
     {
+        pthread_mutex_lock(&printing_stations_lock[i % NUM_PS]);
         printing_station_empty[i % NUM_PS] = false;
+        pthread_mutex_unlock(&printing_stations_lock[i % NUM_PS]);
+ 
         student_print_state[i] = PRINTING;
         sem_post(&student_thread_sem[i]);
     }
@@ -291,7 +298,7 @@ void inform_students(int self)
     pthread_mutex_lock(&print_state_mutex);
 
     // call on group mates first
-    for (int i = grp_start_for(self); i <= grp_end_for(self) && i != self; i++)
+    for (int i = grp_start_for(self); i <= grp_end_for(self); i++)
     {
         if (i % NUM_PS == self % NUM_PS)
         // if they are waiting in same printing station
@@ -302,7 +309,7 @@ void inform_students(int self)
 
     // call on others designated to this same station then
     // with 0 based student and station ids: (for 4: 0, 4, 8...)
-    for (int i = self % NUM_PS; i < NUM_STUDENTS && i != self; i += GRP_SIZE)
+    for (int i = self % NUM_PS; i < NUM_STUDENTS; i += GRP_SIZE)
     {
         get_PS(i);
     }
